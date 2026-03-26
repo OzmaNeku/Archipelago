@@ -1,23 +1,28 @@
 from worlds.AutoWorld import World
+from Options import Toggle, PerGameCommonOptions
+from dataclasses import dataclass
+
+from .items import item_name_to_id
+from .locations import location_name_to_id
 
 from BaseClasses import Region, Location, Item, ItemClassification
 
-ITEM_TO_LOCATION = {
-    0x2A7: 0xC0DE0000,  # Phone Menu
-    0x2DB: 0xC0DE0001,  # Wearing Pins
-}
+class StartWithPhoneMenu(Toggle):
+    """Start the game with the cell phone unlocked."""
+    display_name = "Start with Phone Menu"
+
+
+@dataclass
+class TWEWYOptions(PerGameCommonOptions):
+    start_with_phone_menu: StartWithPhoneMenu
 
 class TWEWYWorld(World):
     game = "The World Ends With You"
     topology_present = False
-    item_name_to_id = {
-        "(S) Phone Menu": 0xC0DE0000,
-        "(B) Wearing Pins": 0xC0DE0001,
-    }
-    location_name_to_id = {
-        "Phone Menu": 0xC0DE0000,
-        "Wearing Pins": 0xC0DE0001,
-    }
+
+    options_dataclass = TWEWYOptions
+    item_name_to_id = item_name_to_id
+    location_name_to_id = location_name_to_id
 
     def create_regions(self):
         region = Region("Menu", self.player, self.multiworld)
@@ -30,6 +35,14 @@ class TWEWYWorld(World):
         for i in self.item_name_to_id:
             item = Item(i, ItemClassification.filler, self.item_name_to_id[i], self.player)
             self.multiworld.itempool.append(item)
+
+    def get_filler_item_name(self) -> str:
+        return "(S) Phone Menu"
+    
+    def fill_slot_data(self):
+        return {
+            "start_with_phone_menu": self.options.start_with_phone_menu.value,
+        }
 
     
 from .client import TWEWYClient
