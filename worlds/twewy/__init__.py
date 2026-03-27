@@ -2,7 +2,7 @@ from worlds.AutoWorld import World
 from Options import Toggle, PerGameCommonOptions
 from dataclasses import dataclass
 
-from .items import item_name_to_id
+from .items import item_name_to_id, item_classifications
 from .locations import location_name_to_id
 
 from BaseClasses import Region, Location, Item, ItemClassification
@@ -32,8 +32,9 @@ class TWEWYWorld(World):
         self.multiworld.regions.append(region)
 
     def create_items(self):
-        for i in self.item_name_to_id:
-            item = Item(i, ItemClassification.filler, self.item_name_to_id[i], self.player)
+        for name, id in self.item_name_to_id.items():
+            classification = item_classifications.get(name, ItemClassification.filler)
+            item = Item(name, classification, id, self.player)
             self.multiworld.itempool.append(item)
 
     def get_filler_item_name(self) -> str:

@@ -85,7 +85,7 @@ class TWEWYClient(BizHawkClient):
             locations_to_check = [ITEM_TO_LOCATION[i] for i in new_items if i in ITEM_TO_LOCATION]
 
             # If stackable item exists, send it.
-            for idx, qty in [(0x2A8, current_items), (0x2B3, current_items), (0x2B2, current_items)]:
+            for idx in [0x2A8, 0x2B3, 0x2B2]:
                 if idx not in current_items:
                     continue
                 current_qty = current_items[idx]
