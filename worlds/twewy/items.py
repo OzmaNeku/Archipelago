@@ -146,3 +146,9 @@ item_classifications = {
     "(S) DEF Boost (Shiki)":    ItemClassification.useful,
     "(S) ATK Boost (Shiki)":    ItemClassification.useful,
 }
+
+item_counts = { 
+    "(S) Extra Slot": 2,
+    "(S) DEF Boost (Shiki)": 6,
+    "(S) ATK Boost (Shiki)": 6,
+}

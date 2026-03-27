@@ -78,6 +78,16 @@ class TWEWYClient(BizHawkClient):
                 idx = inventory_data[i] + (inventory_data[i+1] << 8)
                 current_items[idx] = inventory_data[i+2]
 
+
+            # Phone menu option check
+            if context.slot_data.get("start_with_phone_menu") and 0x2A7 not in current_items:
+                for i in range(0, inventory_size, 4):
+                    if inventory_data[i] == 0xFF:
+                        await bizhawk.write(context.bizhawk_ctx, [
+                            (inventory_base + i, bytes([0xA7, 0x02, 0x01, 0x00]), ram_domain)
+                        ]
+                    )
+                    break
             # New items we have
             new_items = {idx: qty for idx, qty in current_items.items() if idx not in self.checks_seen}
 

@@ -2,7 +2,7 @@ from worlds.AutoWorld import World
 from Options import Toggle, PerGameCommonOptions
 from dataclasses import dataclass
 
-from .items import item_name_to_id, item_classifications
+from .items import item_name_to_id, item_classifications, item_counts
 from .locations import location_name_to_id
 
 from BaseClasses import Region, Location, Item, ItemClassification
@@ -34,8 +34,10 @@ class TWEWYWorld(World):
     def create_items(self):
         for name, id in self.item_name_to_id.items():
             classification = item_classifications.get(name, ItemClassification.filler)
-            item = Item(name, classification, id, self.player)
-            self.multiworld.itempool.append(item)
+            count = item_counts.get(name, 1)
+            for _ in range(count):
+                item = Item(name, classification, id, self.player)
+                self.multiworld.itempool.append(item)
 
     def get_filler_item_name(self) -> str:
         return "(S) Phone Menu"
