@@ -85,9 +85,8 @@ class TWEWYClient(BizHawkClient):
                     if inventory_data[i] == 0xFF:
                         await bizhawk.write(context.bizhawk_ctx, [
                             (inventory_base + i, bytes([0xA7, 0x02, 0x01, 0x00]), ram_domain)
-                        ]
-                    )
-                    break
+                        ])
+                        break
             # New items we have
             new_items = {idx: qty for idx, qty in current_items.items() if idx not in self.checks_seen}
 
