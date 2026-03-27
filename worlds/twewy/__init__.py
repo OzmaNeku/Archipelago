@@ -44,5 +44,11 @@ class TWEWYWorld(World):
             "start_with_phone_menu": self.options.start_with_phone_menu.value,
         }
 
-    
-from .client import TWEWYClient
+
+try:
+    from .client import TWEWYClient
+    print(f"TWEWYClient loaded successfully")
+except Exception as e:
+    import traceback
+    print(f"Failed to load client: {e}")
+    traceback.print_exc()

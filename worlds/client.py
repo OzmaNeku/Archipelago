@@ -3,9 +3,10 @@ from NetUtils import ClientStatus
 import asyncio
 import worlds._bizhawk as bizhawk
 from worlds._bizhawk.client import BizHawkClient
+from CommonClient import logger
 
 from .locations import LOCATION_TO_ITEM
-from .items import ITEM_TO_LOCATION, ITEM_GRANT_TO_LOCATION
+from .items import ITEM_TO_LOCATION
 
 
 if TYPE_CHECKING:
@@ -19,7 +20,6 @@ ovis_cantus_kill_flag = 0x02073E44
 ram_domain = "ARM9 System Bus"
 
 
-
 class TWEWYClient(BizHawkClient):
     # Game info
     game = "The World Ends With You"
@@ -31,20 +31,21 @@ class TWEWYClient(BizHawkClient):
     ovis_cantus_kill_flag = ovis_cantus_kill_flag
 
 
-    def __init__(self) -> None:
+    def __init__(self):
         super().__init__()
         self.checks_seen = set()
         self.server_items = 0
         self.goal_complete = False
-        self.item_grant_counts = {}
 
     # Check if ROM is working as intended and keep inventory up to date
-    async def validate_rom(self, context: "BizHawkClientContext") -> bool:
-        print("Validate Rom called")
-        context.game = self.game
-        context.items_handling = 0b111
-        context.want_slot_data = True
-        context.watcher_timeout = 1
+    #async def validate_rom(self, context: "BizHawkClientContext") -> bool:
+       # context.game = self.game
+       # context.items_handling = 0b111
+       # context.want_slot_data = True
+        #context.watcher_timeout = 1
+       # return True
+
+    async def validate_rom(self, ctx) -> bool:
         return True
     
     # Begin game watcher
@@ -69,33 +70,19 @@ class TWEWYClient(BizHawkClient):
             inventory_data = read_state[0]
             boss_kill_data = read_state[1]
 
-            current_items = {}
+            current_items = set()
             for i in range(0, inventory_size, 4):
                 # If the item is 0xFF, skip. It's empty.
                 if inventory_data[i] == 0xFF:
                     continue
                 # Add the data to the current item pool.
-                idx = inventory_data[i] + (inventory_data[i+1] << 8)
-                current_items[idx] = inventory_data[i+2]
+                current_items.add(inventory_data[i] + (inventory_data[i+1] << 8))
 
             # New items we have
-            new_items = {idx: qty for idx, qty in current_items.items() if idx not in self.checks_seen}
+            new_items = current_items - self.checks_seen
 
             # create array with locations that exist
             locations_to_check = [ITEM_TO_LOCATION[i] for i in new_items if i in ITEM_TO_LOCATION]
-
-            # If stackable item exists, send it.
-            for idx, qty in [(0x2A8, current_items), (0x2B3, current_items), (0x2B2, current_items)]:
-                if idx not in current_items:
-                    continue
-                current_qty = current_items[idx]
-                prev_count = self.item_grant_counts.get(idx, 0)
-                if current_qty>prev_count:
-                    for grant in range(prev_count + 1, current_qty + 1):
-                        if (idx, grant) in ITEM_GRANT_TO_LOCATION:
-                            locations_to_check.append(ITEM_GRANT_TO_LOCATION[(idx, grant)])
-                    self.item_grant_counts[idx] = current_qty
-                    
 
             # If locations exist, send them.
             if locations_to_check:
