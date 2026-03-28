@@ -37,6 +37,7 @@ class TWEWYClient(BizHawkClient):
         self.server_items = 0
         self.goal_complete = False
         self.item_grant_counts = {}
+        self.injected_items = {}
 
     # Check if ROM is working as intended and keep inventory up to date
     async def validate_rom(self, context: "BizHawkClientContext") -> bool:
@@ -80,13 +81,20 @@ class TWEWYClient(BizHawkClient):
 
 
             # Phone menu option check
-            if context.slot_data.get("start_with_phone_menu") and 0x2A7 not in current_items:
+            if context.slot_data.get("start_with_phone_menu") and 0x2A7 not in current_items and 0x2A7 not in self.injected_items:
                 for i in range(0, inventory_size, 4):
                     if inventory_data[i] == 0xFF:
                         await bizhawk.write(context.bizhawk_ctx, [
                             (inventory_base + i, bytes([0xA7, 0x02, 0x01, 0x00]), ram_domain)
                         ])
+                        self.injected_items[0x2A7] = self.injected_items.get(0x2A7, 0) + 1
                         break
+
+
+            # Remove options from current_items before detection loops
+            if 0x2A7 in self.injected_items and 0x2A7 not in self.checks_seen:
+                current_items.pop(0x2A7, None)
+
             # New items we have
             new_items = {idx: qty for idx, qty in current_items.items() if idx not in self.checks_seen}
 
@@ -97,13 +105,14 @@ class TWEWYClient(BizHawkClient):
             for idx in [0x2A8, 0x2B3, 0x2B2]:
                 if idx not in current_items:
                     continue
-                current_qty = current_items[idx]
+                injected_qty = self.injected_items.get(idx, 0)
+                natural_qty = current_items[idx] - injected_qty
                 prev_count = self.item_grant_counts.get(idx, 0)
-                if current_qty>prev_count:
-                    for grant in range(prev_count + 1, current_qty + 1):
-                        if (idx, grant) in ITEM_GRANT_TO_LOCATION:
-                            locations_to_check.append(ITEM_GRANT_TO_LOCATION[(idx, grant)])
-                    self.item_grant_counts[idx] = current_qty
+                if natural_qty > prev_count:
+                    next_grant = prev_count + 1
+                    if (idx, next_grant) in ITEM_GRANT_TO_LOCATION:
+                        locations_to_check.append(ITEM_GRANT_TO_LOCATION[(idx, next_grant)])
+                    self.item_grant_counts[idx] = next_grant
                     
 
             # If locations exist, send them.
@@ -128,6 +137,7 @@ class TWEWYClient(BizHawkClient):
                 combined_index = LOCATION_TO_ITEM.get(network_item.item)
                 if combined_index is None:
                     continue
+                self.injected_items[combined_index] = self.injected_items.get(combined_index, 0) + 1
                 read_state = await bizhawk.read(
                     context.bizhawk_ctx, [
                         (self.inventory_base, inventory_size, self.ram_mem_domain),
@@ -148,6 +158,8 @@ class TWEWYClient(BizHawkClient):
                     )
                     break
 
+                # Purge injected item so it doesn't fire when it shows up.
+                current_items.pop(combined_index, None)
                 # Check up on server items.
                 self.server_items = index + 1
 
