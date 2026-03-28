@@ -47,40 +47,61 @@ class TWEWYClient(BizHawkClient):
         context.want_slot_data = True
         context.watcher_timeout = 1
         return True
-    
+
     # Begin game watcher
     async def game_watcher(self, context: "BizHawkClientContext") -> None:
-        # Logger line for troubleshooting
         from CommonClient import logger
 
         try:
-            # If slot data is none, restart the try.
+            # If slot data is none, return.
             if context.slot_data is None:
                 return
-            
-            #Check inventory and kill flag.
+
+            # 1. Inject items received from server
+            for index, network_item in enumerate(context.items_received[self.server_items:], start=self.server_items):
+                combined_index = LOCATION_TO_ITEM.get(network_item.item)
+                if combined_index is None:
+                    continue
+                self.injected_items[combined_index] = self.injected_items.get(combined_index, 0) + 1
+
+                fresh_read = await bizhawk.read(
+                    context.bizhawk_ctx, [
+                        (self.inventory_base, inventory_size, self.ram_mem_domain),
+                    ]
+                )
+                fresh_inventory_data = fresh_read[0]
+
+                for i in range(0, inventory_size, 4):
+                    if fresh_inventory_data[i] != 0xFF:
+                        continue
+                    await bizhawk.write(
+                        context.bizhawk_ctx, [
+                            (inventory_base + i, bytes([combined_index & 0xFF, (combined_index >> 8) & 0xFF, 0x01, 0x00]), ram_domain)
+                        ]
+                    )
+                    break
+
+                self.server_items = index + 1
+
+            # 2. Read current inventory and kill flag after injection
             read_state = await bizhawk.read(
                 context.bizhawk_ctx, [
                     (self.inventory_base, inventory_size, self.ram_mem_domain),
                     (self.ovis_cantus_kill_flag, 4, self.ram_mem_domain),
                 ]
             )
-
-            # Data from read state
             inventory_data = read_state[0]
             boss_kill_data = read_state[1]
 
+            # 3. Parse inventory into current_items
             current_items = {}
             for i in range(0, inventory_size, 4):
-                # If the item is 0xFF, skip. It's empty.
                 if inventory_data[i] == 0xFF:
                     continue
-                # Add the data to the current item pool.
                 idx = inventory_data[i] + (inventory_data[i+1] << 8)
                 current_items[idx] = inventory_data[i+2]
 
-
-            # Phone menu option check
+            # 4. Phone menu option check
             if context.slot_data.get("start_with_phone_menu") and 0x2A7 not in current_items and 0x2A7 not in self.injected_items:
                 for i in range(0, inventory_size, 4):
                     if inventory_data[i] == 0xFF:
@@ -90,18 +111,17 @@ class TWEWYClient(BizHawkClient):
                         self.injected_items[0x2A7] = self.injected_items.get(0x2A7, 0) + 1
                         break
 
-
-            # Remove options from current_items before detection loops
+            # 5. Remove option-injected Phone Menu from detection until naturally picked up
             if 0x2A7 in self.injected_items and 0x2A7 not in self.checks_seen:
                 current_items.pop(0x2A7, None)
 
-            # New items we have
+            # 6. New items we have
             new_items = {idx: qty for idx, qty in current_items.items() if idx not in self.checks_seen}
 
-            # create array with locations that exist
+            # 7. Build locations to check for unique items
             locations_to_check = [ITEM_TO_LOCATION[i] for i in new_items if i in ITEM_TO_LOCATION]
 
-            # If stackable item exists, send it.
+            # 8. Build locations to check for stackable items
             for idx in [0x2A8, 0x2B3, 0x2B2]:
                 if idx not in current_items:
                     continue
@@ -113,14 +133,13 @@ class TWEWYClient(BizHawkClient):
                     if (idx, next_grant) in ITEM_GRANT_TO_LOCATION:
                         locations_to_check.append(ITEM_GRANT_TO_LOCATION[(idx, next_grant)])
                     self.item_grant_counts[idx] = next_grant
-                    
 
-            # If locations exist, send them.
+            # 9. Send location checks
             if locations_to_check:
                 await context.send_msgs([{"cmd": "LocationChecks", "locations": locations_to_check}])
                 self.checks_seen.update(new_items)
 
-            # Clear item from inventory if location was the last check.
+            # 10. Clear naturally picked up items from inventory
             for i in range(0, inventory_size, 4):
                 if inventory_data[i] == 0xFF:
                     continue
@@ -132,46 +151,10 @@ class TWEWYClient(BizHawkClient):
                         ]
                     )
 
-            # Injecting into the game itself from other games.
-            for index, network_item in enumerate(context.items_received[self.server_items:], start=self.server_items):
-                combined_index = LOCATION_TO_ITEM.get(network_item.item)
-                if combined_index is None:
-                    continue
-                self.injected_items[combined_index] = self.injected_items.get(combined_index, 0) + 1
-                read_state = await bizhawk.read(
-                    context.bizhawk_ctx, [
-                        (self.inventory_base, inventory_size, self.ram_mem_domain),
-                    ]
-                )
-                
-                # Grab fresh inventory data
-                fresh_inventory_data = read_state[0]
-
-                #Loop through and write to empty slot
-                for i in range(0, inventory_size, 4):
-                    if fresh_inventory_data[i] != 0xFF:
-                        continue
-                    await bizhawk.write(
-                        context.bizhawk_ctx, [
-                            (inventory_base + i, bytes([combined_index & 0xFF, (combined_index >> 8) & 0xFF, 0x01, 0x00]), ram_domain)
-                        ]
-                    )
-                    break
-
-                # Purge injected item so it doesn't fire when it shows up.
-                current_items.pop(combined_index, None)
-                # Check up on server items.
-                self.server_items = index + 1
-
-            # Check to see if boss is deadw
+            # 11. Goal check
             if boss_kill_data[0] == 1 and not self.goal_complete:
                 self.goal_complete = True
                 await context.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
 
-        # Exception pass.
-        except bizhawk.RequestFailedError:
+        except (bizhawk.RequestFailedError, bizhawk.ConnectorError):
             pass
-        except bizhawk.ConnectorError:
-            pass
-
-       
