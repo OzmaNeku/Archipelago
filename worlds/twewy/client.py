@@ -40,7 +40,6 @@ class TWEWYClient(BizHawkClient):
         self.goal_complete = False
         self.item_grant_counts = {}
         self.injected_items = {}
-        self.previous_items = set()
         self.phone_sent = False
 
     # Check if ROM is working as intended and keep inventory up to date
@@ -50,6 +49,7 @@ class TWEWYClient(BizHawkClient):
         context.items_handling = 0b111
         context.want_slot_data = True
         context.watcher_timeout = 1
+        # Initialize location buffer to FF so Lua script can find empty slots
         buffer = bytes([0xFF, 0xFF, 0x00, 0x00] * 280)
         await bizhawk.write(context.bizhawk_ctx, [
             (location_base, buffer, ram_domain)
@@ -65,14 +65,16 @@ class TWEWYClient(BizHawkClient):
             if context.slot_data is None:
                 return
 
-            # 1. Inject items received from server
+            # 1. Inject items received from server directly into inventory
+            # The Lua script at 0x02022D78 only intercepts natural game writes,
+            # so our direct inventory writes will never appear in the location buffer
             for index, network_item in enumerate(context.items_received[self.server_items:], start=self.server_items):
                 combined_index = LOCATION_TO_ITEM.get(network_item.item)
                 if combined_index is None:
                     self.server_items = index + 1
                     continue
 
-                # 1.1 Get fresh read from the inventory
+                # 1.1 Get fresh read from inventory
                 fresh_read = await bizhawk.read(
                     context.bizhawk_ctx, [
                         (self.inventory_base, inventory_size, self.ram_mem_domain),
@@ -80,7 +82,7 @@ class TWEWYClient(BizHawkClient):
                 )
                 fresh_inventory_data = fresh_read[0]
 
-                # 1.2 If item exists, iterate quantity
+                # 1.2 If item already exists in inventory, increment quantity
                 edited = False
                 for i in range(0, inventory_size, 4):
                     if fresh_inventory_data[i] != combined_index & 0xFF:
@@ -97,7 +99,7 @@ class TWEWYClient(BizHawkClient):
                     break
 
                 if not edited:
-                    # 1.3 If item doesn't exist, write it to a new slot
+                    # 1.3 If item doesn't exist, write it to a new empty slot
                     for i in range(0, inventory_size, 4):
                         if fresh_inventory_data[i] != 0xFF:
                             continue
@@ -113,29 +115,24 @@ class TWEWYClient(BizHawkClient):
                 self.server_items = index + 1
                 break  # Only inject one item per frame
 
-            # 2 Read inventory, location buffer and kill flag
+            # 2. Read location buffer, inventory and kill flag
+            # Location buffer is written to by the Lua script when the game
+            # naturally grants an item at 0x02022D78
             read_state = await bizhawk.read(
                 context.bizhawk_ctx, [
-                    (self.inventory_base, inventory_size, self.ram_mem_domain),
                     (self.location_base, inventory_size, self.ram_mem_domain),
+                    (self.inventory_base, inventory_size, self.ram_mem_domain),
                     (self.ovis_cantus_kill_flag, 4, self.ram_mem_domain),
                 ]
             )
-            inventory_data = read_state[0]
-            location_data = read_state[1]
+            location_data = read_state[0]
+            inventory_data = read_state[1]
             boss_kill_data = read_state[2]
 
-            # 3 Parse inventory into current_items
-            current_items = {}
-            for i in range(0, inventory_size, 4):
-                if inventory_data[i] == 0xFF:
-                    continue
-                idx = inventory_data[i] + (inventory_data[i+1] << 8)
-                current_items[idx] = inventory_data[i+2]
+            # 3. Options checks
 
-
-            # 3.1 Phone menu option
-            if context.slot_data.get("start_with_phone_menu") and 0x2A7 not in current_items and 0x2A7 not in self.injected_items and not self.phone_sent:
+            # 3.1 Phone menu option - inject directly, bypasses Lua intercept
+            if context.slot_data.get("start_with_phone_menu") and not self.phone_sent:
                 for i in range(0, inventory_size, 4):
                     if inventory_data[i] == 0xFF:
                         await bizhawk.write(context.bizhawk_ctx, [
@@ -144,45 +141,16 @@ class TWEWYClient(BizHawkClient):
                         self.injected_items[0x2A7] = self.injected_items.get(0x2A7, 0) + 1
                         break
                 self.phone_sent = True
+                logger.info("Sent phone menu")
 
-            # 3.2 Text skip option
+            # 3.2 Text skip - continuously write or will be purged on phone menu open
             if context.slot_data.get("start_with_text_skip"):
                 await bizhawk.write(context.bizhawk_ctx, [
                     (0x020B0478, bytes([0x01, 0x00, 0xA0, 0xE3]), ram_domain)
                 ])
 
-            # 4 Detect new natural pickups by comparing to previous frame
-            naturally_detected = set()
-            loc_offset = 0  # Track next empty slot manually
-            for idx in current_items:
-                if idx in self.previous_items:
-                    continue
-                if idx in self.injected_items:
-                    continue
-                naturally_detected.add(idx)
-                low = idx & 0xFF
-                high = (idx >> 8) & 0xFF
-                # Find next empty slot starting from loc_offset
-                for i in range(loc_offset, inventory_size, 4):
-                    if location_data[i] == 0xFF:
-                        await bizhawk.write(
-                            context.bizhawk_ctx, [
-                                (location_base + i, bytes([low, high, 0x01, 0x00]), ram_domain)
-                            ]
-                        )
-                        logger.info(f"Written to location buffer: {hex(idx)}")
-                        loc_offset = i + 4  # Advance past this slot
-                        break
-
-            # 4.1 Re-read location buffer after writing
-            fresh_loc_read = await bizhawk.read(
-            context.bizhawk_ctx, [
-                (self.location_base, inventory_size, self.ram_mem_domain),
-                ]
-            )
-            location_data = fresh_loc_read[0]
-
-            # 5 Parse location buffer into check_items
+            # 4. Parse location buffer into check_items
+            # Only natural pickups intercepted by Lua appear here
             check_items = {}
             for i in range(0, inventory_size, 4):
                 if location_data[i] == 0xFF:
@@ -190,29 +158,26 @@ class TWEWYClient(BizHawkClient):
                 idx = location_data[i] + (location_data[i+1] << 8)
                 check_items[idx] = location_data[i+2]
 
-            # 6 Build locations to check for unique items
+            # 5. Build locations to check for unique items
             new_items = {idx: qty for idx, qty in check_items.items() if idx not in self.checks_seen}
             locations_to_check = [ITEM_TO_LOCATION[i] for i in new_items if i in ITEM_TO_LOCATION]
 
-            # 7 Build locations to check for stackable items
+            # 6. Build locations to check for stackable items
             for idx in [0x2A8, 0x2B3, 0x2B2]:
                 if idx not in check_items:
-                    continue
-                if idx in self.previous_items:
-                    continue
-                if self.injected_items.get(idx, 0) > 0:
                     continue
                 next_grant = self.item_grant_counts.get(idx, 0) + 1
                 if (idx, next_grant) in ITEM_GRANT_TO_LOCATION:
                     locations_to_check.append(ITEM_GRANT_TO_LOCATION[(idx, next_grant)])
                 self.item_grant_counts[idx] = next_grant
 
-            # 8 Send location checks
+            # 7. Send location checks to server
             if locations_to_check:
+                logger.info(f"Sending checks: {[hex(l) for l in locations_to_check]}")
                 await context.send_msgs([{"cmd": "LocationChecks", "locations": locations_to_check}])
                 self.checks_seen.update(new_items)
 
-            # 9 Clear location buffer after reading
+            # 8. Clear location buffer after reading so it's ready for next pickup
             for i in range(0, inventory_size, 4):
                 if location_data[i] != 0xFF:
                     await bizhawk.write(
@@ -221,27 +186,27 @@ class TWEWYClient(BizHawkClient):
                         ]
                     )
 
-            # 10 Clear naturally picked up items from inventory
+            # 9. Clear naturally picked up items from inventory
             for i in range(0, inventory_size, 4):
                 if inventory_data[i] == 0xFF:
                     continue
                 idx = inventory_data[i] + (inventory_data[i+1] << 8)
-                if idx in naturally_detected and idx in ITEM_TO_LOCATION:
+                if idx in check_items and idx in ITEM_TO_LOCATION:
                     if self.injected_items.get(idx, 0) > 0:
+                        # 9.1 Item was previously injected, decrement count
                         self.injected_items[idx] -= 1
                     else:
+                        # 9.2 Item was not injected, clear the slot
                         await bizhawk.write(
                             context.bizhawk_ctx, [
                                 (inventory_base + i, bytes([0xFF, 0xFF, 0x00, 0x00]), ram_domain)
                             ]
                         )
 
-            # 11 Goal check
+            # 10. Goal check
             if boss_kill_data[0] == 1 and not self.goal_complete:
                 self.goal_complete = True
                 await context.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
-
-            self.previous_items = set(current_items.keys())
 
         except (bizhawk.RequestFailedError, bizhawk.ConnectorError):
             pass
