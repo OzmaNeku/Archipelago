@@ -11,10 +11,15 @@ class StartWithPhoneMenu(Toggle):
     """Start the game with the cell phone unlocked."""
     display_name = "Start with Phone Menu"
 
+class StartWithTextSkip(Toggle):
+    """Have the ability to skip text at all times."""
+    display_name = "Skip Text"
+
 
 @dataclass
 class TWEWYOptions(PerGameCommonOptions):
     start_with_phone_menu: StartWithPhoneMenu
+    start_with_text_skip: StartWithTextSkip
 
 class TWEWYWorld(World):
     game = "The World Ends With You"
@@ -45,6 +50,7 @@ class TWEWYWorld(World):
     def fill_slot_data(self):
         return {
             "start_with_phone_menu": self.options.start_with_phone_menu.value,
+            "start_with_text_skip": self.options.start_with_text_skip.value,
         }
 
 

@@ -38,6 +38,9 @@ class TWEWYClient(BizHawkClient):
         self.goal_complete = False
         self.item_grant_counts = {}
         self.injected_items = {}
+        self.previous_items = set()
+        self.phone_sent = False
+        self.text_skip_sent = False
 
     # Check if ROM is working as intended and keep inventory up to date
     async def validate_rom(self, context: "BizHawkClientContext") -> bool:
@@ -62,14 +65,38 @@ class TWEWYClient(BizHawkClient):
                 combined_index = LOCATION_TO_ITEM.get(network_item.item)
                 if combined_index is None:
                     continue
-                self.injected_items[combined_index] = self.injected_items.get(combined_index, 0) + 1
 
+                # 1.1 Get fresh read from the inventory
                 fresh_read = await bizhawk.read(
                     context.bizhawk_ctx, [
                         (self.inventory_base, inventory_size, self.ram_mem_domain),
                     ]
                 )
                 fresh_inventory_data = fresh_read[0]
+
+
+                # 1.2 if item exists, iterate
+                edited = False
+                for i in range(0, inventory_size, 4):
+                    if fresh_inventory_data[i] != combined_index & 0xFF:
+                        continue
+
+                    #if fresh_inventory_data[i + 2] == self.injected_items[combined_index & 0xFF]:
+                        #edited = True
+                        #logger.info("We break here:" + str(fresh_inventory_data[i+2]))
+                        #break
+                                   
+                    logger.info((fresh_inventory_data[i + 2] + 1))
+                    await bizhawk.write(
+                        context.bizhawk_ctx, [
+                            (inventory_base + i, bytes([combined_index & 0xFF, (combined_index >> 8) & 0xFF, (fresh_inventory_data[i + 2] + 1), 0x00]), ram_domain)
+                        ])
+                    self.injected_items[combined_index & 0xFF] = fresh_inventory_data[i + 2] + 1
+                    edited = True
+                    break
+
+                if edited == True:
+                    continue
 
                 for i in range(0, inventory_size, 4):
                     if fresh_inventory_data[i] != 0xFF:
@@ -79,6 +106,7 @@ class TWEWYClient(BizHawkClient):
                             (inventory_base + i, bytes([combined_index & 0xFF, (combined_index >> 8) & 0xFF, 0x01, 0x00]), ram_domain)
                         ]
                     )
+                    self.injected_items[combined_index & 0xFF] = 1
                     break
 
                 self.server_items = index + 1
@@ -101,8 +129,10 @@ class TWEWYClient(BizHawkClient):
                 idx = inventory_data[i] + (inventory_data[i+1] << 8)
                 current_items[idx] = inventory_data[i+2]
 
-            # 4. Phone menu option check
-            if context.slot_data.get("start_with_phone_menu") and 0x2A7 not in current_items and 0x2A7 not in self.injected_items:
+            # 4.Options checks
+
+            # 4.1 - Phone menu
+            if context.slot_data.get("start_with_phone_menu") and 0x2A7 not in current_items and 0x2A7 not in self.injected_items and self.phone_sent == False:
                 for i in range(0, inventory_size, 4):
                     if inventory_data[i] == 0xFF:
                         await bizhawk.write(context.bizhawk_ctx, [
@@ -110,51 +140,66 @@ class TWEWYClient(BizHawkClient):
                         ])
                         self.injected_items[0x2A7] = self.injected_items.get(0x2A7, 0) + 1
                         break
+                self.phone_sent = True
+                logger.info("Sent phone menu")
 
-            # 5. Remove option-injected Phone Menu from detection until naturally picked up
-            if 0x2A7 in self.injected_items and 0x2A7 not in self.checks_seen:
-                current_items.pop(0x2A7, None)
+            # 4.2 - Text skip - has to continously write or will be purged on phone menu open
+            if context.slot_data.get("start_with_text_skip"):
+                await bizhawk.write(
+                    context.bizhawk_ctx, [
+                        (0x020B0478, bytes([0x01, 0x00, 0xA0, 0xE3]), ram_domain)
+                    ]  
+                )
 
-            # 6. New items we have
-            new_items = {idx: qty for idx, qty in current_items.items() if idx not in self.checks_seen}
+            # 5. New items we have
+            new_items = {idx: qty for idx, qty in current_items.items() 
+             if idx not in self.checks_seen 
+             and qty > self.injected_items.get(idx, 0)}
 
-            # 7. Build locations to check for unique items
+            # 6. Build locations to check for unique items
             locations_to_check = [ITEM_TO_LOCATION[i] for i in new_items if i in ITEM_TO_LOCATION]
 
-            # 8. Build locations to check for stackable items
+            # 7. Build locations to check for stackable items
             for idx in [0x2A8, 0x2B3, 0x2B2]:
                 if idx not in current_items:
                     continue
-                injected_qty = self.injected_items.get(idx, 0)
-                natural_qty = current_items[idx] - injected_qty
-                prev_count = self.item_grant_counts.get(idx, 0)
-                if natural_qty > prev_count:
-                    next_grant = prev_count + 1
-                    if (idx, next_grant) in ITEM_GRANT_TO_LOCATION:
-                        locations_to_check.append(ITEM_GRANT_TO_LOCATION[(idx, next_grant)])
-                    self.item_grant_counts[idx] = next_grant
+                if idx in self.previous_items:
+                    continue
+                if self.injected_items.get(idx, 0) > 0:
+                    continue
+                next_grant = self.item_grant_counts.get(idx, 0) + 1
+                if (idx, next_grant) in ITEM_GRANT_TO_LOCATION:
+                    locations_to_check.append(ITEM_GRANT_TO_LOCATION[(idx, next_grant)])
+                self.item_grant_counts[idx] = next_grant
 
-            # 9. Send location checks
+            # 8. Send location checks
             if locations_to_check:
                 await context.send_msgs([{"cmd": "LocationChecks", "locations": locations_to_check}])
                 self.checks_seen.update(new_items)
 
-            # 10. Clear naturally picked up items from inventory
+            # 9. Clear naturally picked up items from inventory
             for i in range(0, inventory_size, 4):
                 if inventory_data[i] == 0xFF:
                     continue
                 idx = inventory_data[i] + (inventory_data[i+1] << 8)
                 if idx in new_items and idx in ITEM_TO_LOCATION:
-                    await bizhawk.write(
-                        context.bizhawk_ctx, [
-                            (inventory_base + i, bytes([0xFF, 0xFF, 0x00, 0x00]), ram_domain)
-                        ]
-                    )
+                    if self.injected_items.get(idx, 0) > 0:
+                        # 9.1 Item was previously injected, just decrement injected count
+                        self.injected_items[idx] -= 1
+                    else:
+                        # 9.2 Item did not exist before, clear the slot entirely
+                        await bizhawk.write(
+                            context.bizhawk_ctx, [
+                                (inventory_base + i, bytes([0xFF, 0xFF, 0x00, 0x00]), ram_domain)
+                            ]
+                        )
 
-            # 11. Goal check
+            # 10. Goal check
             if boss_kill_data[0] == 1 and not self.goal_complete:
                 self.goal_complete = True
                 await context.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
+
+            self.previous_items = set(current_items.keys())
 
         except (bizhawk.RequestFailedError, bizhawk.ConnectorError):
             pass
