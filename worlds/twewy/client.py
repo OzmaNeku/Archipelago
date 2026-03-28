@@ -191,12 +191,24 @@ class TWEWYClient(BizHawkClient):
                 if inventory_data[i] == 0xFF:
                     continue
                 idx = inventory_data[i] + (inventory_data[i+1] << 8)
-                if idx in check_items and idx in ITEM_TO_LOCATION:
+                if idx in check_items and (idx in ITEM_TO_LOCATION or idx in [0x2A8, 0x2B3, 0x2B2]):
+                    logger.info(f"Step 9: idx={hex(idx)} injected={self.injected_items.get(idx, 0)} current_qty={inventory_data[i+2]}")
                     if self.injected_items.get(idx, 0) > 0:
-                        # 9.1 Item was previously injected, decrement count
                         self.injected_items[idx] -= 1
+                        current_qty = inventory_data[i+2]
+                        if current_qty > 1:
+                            await bizhawk.write(
+                                context.bizhawk_ctx, [
+                                    (inventory_base + i + 2, bytes([current_qty - 1]), ram_domain)
+                                ]
+                            )
+                        else:
+                            await bizhawk.write(
+                                context.bizhawk_ctx, [
+                                    (inventory_base + i, bytes([0xFF, 0xFF, 0x00, 0x00]), ram_domain)
+                                ]
+                            )
                     else:
-                        # 9.2 Item was not injected, clear the slot
                         await bizhawk.write(
                             context.bizhawk_ctx, [
                                 (inventory_base + i, bytes([0xFF, 0xFF, 0x00, 0x00]), ram_domain)
