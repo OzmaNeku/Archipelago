@@ -58,7 +58,6 @@ class TWEWYClient(BizHawkClient):
 
     # Begin game watcher
     async def game_watcher(self, context: "BizHawkClientContext") -> None:
-        from CommonClient import logger
 
         try:
             # If slot data is none, return.
@@ -160,7 +159,6 @@ class TWEWYClient(BizHawkClient):
                     continue
                 idx = location_data[i] + (location_data[i+1] << 8)
                 check_items[idx] = location_data[i+2]
-                logger.info(f"check_items: idx={hex(idx)} byte0={location_data[i]:02X} byte1={location_data[i+1]:02X} byte2={location_data[i+2]:02X} byte3={location_data[i+3]:02X}")
 
             # 5. Build locations to check for unique items
             new_items = {idx: qty for idx, qty in check_items.items() if idx not in self.checks_seen}
@@ -177,7 +175,6 @@ class TWEWYClient(BizHawkClient):
 
             # 7. Send location checks to server
             if locations_to_check:
-                logger.info(f"Sending checks: {[hex(l) for l in locations_to_check]}")
                 await context.send_msgs([{"cmd": "LocationChecks", "locations": locations_to_check}])
                 self.checks_seen.update(new_items)
 
@@ -199,7 +196,6 @@ class TWEWYClient(BizHawkClient):
                     continue
                 idx = inventory_data[i] + (inventory_data[i+1] << 8)
                 if idx in check_items and (idx in ITEM_TO_LOCATION or idx in [0x2A8, 0x2B3, 0x2B2]):
-                    logger.info(f"inventory slot: idx={hex(idx)} byte0={inventory_data[i]:02X} byte1={inventory_data[i+1]:02X} byte2={inventory_data[i+2]:02X} byte3={inventory_data[i+3]:02X}")
                     if self.injected_items.get(idx, 0) > 0:
                         self.injected_items[idx] -= 1
                         actual_qty = inventory_data[i+2] - 0x10
