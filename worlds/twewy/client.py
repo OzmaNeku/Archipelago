@@ -67,8 +67,9 @@ class TWEWYClient(BizHawkClient):
 
             # 1. Inject items received from server directly into inventory
             # The Lua script at 0x02022D78 only intercepts natural game writes,
-            # so our direct inventory writes will never appear in the location buffer
+            # so direct inventory writes will never appear in the location buffer
             for index, network_item in enumerate(context.items_received[self.server_items:], start=self.server_items):
+                edited = False
                 combined_index = LOCATION_TO_ITEM.get(network_item.item)
                 if combined_index is None:
                     self.server_items = index + 1
@@ -82,21 +83,23 @@ class TWEWYClient(BizHawkClient):
                 )
                 fresh_inventory_data = fresh_read[0]
 
-                # 1.2 If item already exists in inventory, increment quantity
-                edited = False
+                # 1.2 If item already exists, increment using archipelago count
                 for i in range(0, inventory_size, 4):
                     if fresh_inventory_data[i] != combined_index & 0xFF:
                         continue
                     if fresh_inventory_data[i + 1] != (combined_index >> 8) & 0xFF:
                         continue
+                    new_qty = self.injected_items.get(combined_index, 0) + 1
                     logger.info("Sending item to inventory FROM SERVER, iterating version")
                     await bizhawk.write(
                         context.bizhawk_ctx, [
-                            (inventory_base + i, bytes([combined_index & 0xFF, (combined_index >> 8) & 0xFF, (fresh_inventory_data[i + 2] + 1), 0x00]), ram_domain)
+                            (inventory_base + i, bytes([combined_index & 0xFF, (combined_index >> 8) & 0xFF, new_qty, 0x00]), ram_domain)
                         ])
-                    self.injected_items[combined_index] = fresh_inventory_data[i + 2] + 1
+                    self.injected_items[combined_index] = new_qty
                     edited = True
                     break
+
+
 
                 if not edited:
                     # 1.3 If item doesn't exist, write it to a new empty slot
@@ -157,6 +160,7 @@ class TWEWYClient(BizHawkClient):
                     continue
                 idx = location_data[i] + (location_data[i+1] << 8)
                 check_items[idx] = location_data[i+2]
+                logger.info(f"check_items: idx={hex(idx)} byte0={location_data[i]:02X} byte1={location_data[i+1]:02X} byte2={location_data[i+2]:02X} byte3={location_data[i+3]:02X}")
 
             # 5. Build locations to check for unique items
             new_items = {idx: qty for idx, qty in check_items.items() if idx not in self.checks_seen}
@@ -195,9 +199,22 @@ class TWEWYClient(BizHawkClient):
                     continue
                 idx = inventory_data[i] + (inventory_data[i+1] << 8)
                 if idx in check_items and (idx in ITEM_TO_LOCATION or idx in [0x2A8, 0x2B3, 0x2B2]):
+                    logger.info(f"inventory slot: idx={hex(idx)} byte0={inventory_data[i]:02X} byte1={inventory_data[i+1]:02X} byte2={inventory_data[i+2]:02X} byte3={inventory_data[i+3]:02X}")
                     if self.injected_items.get(idx, 0) > 0:
-                        # Item was previously injected — leave slot alone, just track the check
                         self.injected_items[idx] -= 1
+                        actual_qty = inventory_data[i+2] - 0x10
+                        if actual_qty > 1:
+                            await bizhawk.write(
+                                context.bizhawk_ctx, [
+                                    (inventory_base + i + 2, bytes([actual_qty - 1 + 0x10]), ram_domain)
+                                ]
+                            )
+                        else:
+                            await bizhawk.write(
+                                context.bizhawk_ctx, [
+                                    (inventory_base + i, bytes([0xFF, 0xFF, 0x00, 0x00]), ram_domain)
+                                ]
+                            )
                     else:
                         # Item was not injected — clear the slot entirely
                         await bizhawk.write(
